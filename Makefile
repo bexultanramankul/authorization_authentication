@@ -9,7 +9,7 @@ endif
 DB_URL ?= $(DB_URL)
 
 MIGRATIONS_DIR=migrations
-NAME=add_session_indexes
+NAME=add_phone_verification
 VERSION=1
 
 .PHONY: up down force goto version create install-migrate
@@ -25,10 +25,6 @@ down:
 # Откатить ВСЕ миграции
 down-all:
 	migrate -path $(MIGRATIONS_DIR) -database $(DB_URL) down
-
-# Принудительно задать версию миграции (указать VERSION=номер)
-force:
-	migrate -path $(MIGRATIONS_DIR) -database $(DB_URL) force $(VERSION)
 
 # Перейти к конкретной версии миграции (указать VERSION=номер)
 goto:

@@ -5,6 +5,7 @@ import (
 	"authorization_authentication/internal/service"
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 type AuthHandler struct {
@@ -27,6 +28,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Phone    string `json:"phone"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -34,7 +36,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.authService.Register(r.Context(), req.Email, req.Password)
+	user, err := h.authService.Register(r.Context(), req.Email, req.Password, req.Phone)
 	if err != nil {
 		status := http.StatusBadRequest
 		if err == model.ErrUserAlreadyExists {
@@ -45,6 +47,46 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.sendSuccessResponse(w, user, http.StatusCreated)
+}
+
+func (h *AuthHandler) VerifyPhone(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// 1. Парсим входящий запрос
+	var req struct {
+		Phone string `json:"phone"`
+		Code  string `json:"code"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendErrorResponse(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// 2. Валидация входных данных
+	if req.Phone == "" || req.Code == "" {
+		h.sendErrorResponse(w, "Phone and code are required", http.StatusUnprocessableEntity)
+		return
+	}
+
+	// 3. Вызываем сервис верификации
+	if err := h.authService.VerifyPhone(r.Context(), req.Phone, req.Code); err != nil {
+		switch err {
+		case model.ErrVerificationFailed:
+			h.sendErrorResponse(w, "Invalid verification code", http.StatusForbidden)
+		case model.ErrUserNotFound:
+			h.sendErrorResponse(w, "Phone number not registered", http.StatusNotFound)
+		default:
+			h.sendErrorResponse(w, "Verification failed", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// 4. Отправляем успешный ответ
+	h.sendSuccessResponse(w, map[string]string{
+		"status":  "success",
+		"message": "Phone number verified",
+	}, http.StatusOK)
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
@@ -60,18 +102,29 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Получаем реальный IP (учитываем прокси)
+	ip := r.RemoteAddr
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		ip = strings.Split(forwarded, ",")[0]
+	}
+
 	tokens, err := h.authService.Login(
 		r.Context(),
 		req.Email,
 		req.Password,
 		r.UserAgent(),
-		r.RemoteAddr,
+		ip,
 	)
 
 	if err != nil {
 		status := http.StatusUnauthorized
-		if err == model.ErrUserNotFound {
+		switch err {
+		case model.ErrUserNotFound:
 			status = http.StatusNotFound
+		case model.ErrTooManyAttempts:
+			status = http.StatusTooManyRequests
+		case model.ErrIPBlocked:
+			status = http.StatusForbidden // 403
 		}
 		h.sendErrorResponse(w, err.Error(), status)
 		return
